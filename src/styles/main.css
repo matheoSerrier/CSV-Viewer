@@ -189,3 +189,14 @@ thead th{ position:sticky; top:0; background: var(--card); }
   white-space: pre-line;      /* garde les \n */
 }
 
+.export{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+}
+
+.export select{
+  padding:6px 8px; border:1px solid var(--border); border-radius:8px; background:#fff;
+}
+.export-bom{
+  display:flex; align-items:center; gap:6px; color: var(--muted); font-size: 14px;
+}
+
