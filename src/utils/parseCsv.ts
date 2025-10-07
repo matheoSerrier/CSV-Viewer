@@ -80,13 +80,19 @@ export function parseCsv(text: string): TableData {
     return copy.slice(0, maxCols);
   });
 
+  const seen = new Set<string>();
+  const uniqueRows = dataRows.filter((cells) => {
+    const key = JSON.stringify(cells); // sûr même si des séparateurs apparaissent
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
   return {
     headers,
-    rows: dataRows.map((cells) => {
+    rows: uniqueRows.map((cells) => {
       const obj: Record<string, string> = {};
-      headers.forEach((h, i) => {
-        obj[h] = (cells[i] ?? "").trim();
-      });
+      headers.forEach((h, i) => { obj[h] = cells[i] ?? ""; });
       return obj;
     }),
   };
