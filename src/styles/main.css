@@ -161,3 +161,31 @@ thead th{ position:sticky; top:0; background: var(--card); }
 .btn-secondary{
   border:1px solid var(--border); background:#fff; padding:8px 12px; border-radius:8px; cursor:pointer;
 }
+
+/* conserve déjà: td { white-space: pre-line; vertical-align: top; } */
+
+.cell-editing{
+  background: #fffbea;
+}
+
+.cell-editor{
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  color: inherit;
+  background: #ffffff;
+  resize: vertical;           /* autorise redimensionnement vertical */
+  outline: none;
+}
+.cell-editor:focus{
+  border-color: #94a3b8;
+  box-shadow: 0 0 0 3px rgba(148,163,184,.25);
+}
+
+.cell-value{
+  white-space: pre-line;      /* garde les \n */
+}
+

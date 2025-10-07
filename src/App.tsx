@@ -15,30 +15,22 @@ export default function App() {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<SortState>({ key: null, direction: "asc" });
 
-  // 🔎 filtre global
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-
-  // Debounce du filtre pour éviter de recalculer à chaque frappe
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query), 250);
     return () => clearTimeout(t);
   }, [query]);
 
-  // Collator FR pour tri texte (accents, chiffres)
   const collator = useMemo(
     () => new Intl.Collator("fr", { sensitivity: "base", numeric: true }),
     []
   );
 
-  // Helpers
   const normalize = (s: string) =>
-    s
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, ""); // supprime les accents
+    s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
-  const tryParseNumber = (raw: string | undefined | null): number | null => {
+  const tryParseNumber = (raw?: string | null): number | null => {
     if (!raw) return null;
     let s = raw.trim().replace(/\u00A0/g, " ");
     if (!s) return null;
@@ -52,18 +44,12 @@ export default function App() {
       const n = Number(s);
       return Number.isFinite(n) ? n : null;
     }
-    if (/^-?\d+,\d+$/.test(s)) {
-      const n = Number(s.replace(",", "."));
-      return Number.isFinite(n) ? n : null;
-    }
-    if (/^-?\d+(\.\d+)?$/.test(s)) {
-      const n = Number(s);
-      return Number.isFinite(n) ? n : null;
-    }
+    if (/^-?\d+,\d+$/.test(s)) return Number(s.replace(",", "."));
+    if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
     return null;
   };
 
-  const tryParseDate = (raw: string | undefined | null): number | null => {
+  const tryParseDate = (raw?: string | null): number | null => {
     if (!raw) return null;
     const s = raw.trim();
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
@@ -72,8 +58,7 @@ export default function App() {
     }
     const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
     if (m) {
-      const dd = Number(m[1]), mm = Number(m[2]) - 1, yyyy = Number(m[3]);
-      const d = new Date(yyyy, mm, dd).getTime();
+      const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])).getTime();
       return Number.isFinite(d) ? d : null;
     }
     return null;
@@ -83,7 +68,6 @@ export default function App() {
     const an = tryParseNumber(a);
     const bn = tryParseNumber(b);
     if (an !== null && bn !== null) return an - bn;
-
     const ad = tryParseDate(a);
     const bd = tryParseDate(b);
     if (ad !== null && bd !== null) return ad - bd;
@@ -96,42 +80,51 @@ export default function App() {
     return collator.compare(a ?? "", b ?? "");
   };
 
-  // 1) Filtrage (avant tri/pagination)
-  const filteredRows = useMemo(() => {
+  const filteredEntries = useMemo(() => {
     const q = normalize(debouncedQuery);
-    if (!q) return data.rows;
+    const withIndex = data.rows.map((row, idx) => ({ row, idx }));
+    if (!q) return withIndex;
     const keys = data.headers;
-    return data.rows.filter((row) =>
+    return withIndex.filter(({ row }) =>
       keys.some((k) => normalize(row[k] ?? "").includes(q))
     );
   }, [data.rows, data.headers, debouncedQuery]);
 
-  // 2) Tri sur les lignes filtrées
-  const sortedRows = useMemo(() => {
-    if (!sort.key) return filteredRows;
+  const sortedEntries = useMemo(() => {
+    if (!sort.key) return filteredEntries;
     const key = sort.key;
     const dir = sort.direction === "asc" ? 1 : -1;
-    return filteredRows
-      .map((row, idx) => ({ row, idx }))
-      .sort((A, B) => {
-        const cmp = compareCells(A.row[key] ?? "", B.row[key] ?? "");
-        return cmp !== 0 ? dir * cmp : A.idx - B.idx;
-      })
-      .map((x) => x.row);
-  }, [filteredRows, sort.key, sort.direction]);
+    return [...filteredEntries].sort((A, B) => {
+      const cmp = compareCells(A.row[key] ?? "", B.row[key] ?? "");
+      return cmp !== 0 ? dir * cmp : A.idx - B.idx;
+    });
+  }, [filteredEntries, sort.key, sort.direction]);
 
-  // Reset page si dataset / tri / filtre change
-  useEffect(() => { setPage(1); }, [data.headers.join("|"), sort.key, sort.direction, debouncedQuery]);
+  useEffect(() => {
+    setPage(1);
+  }, [data.headers.join("|"), sort.key, sort.direction, debouncedQuery]);
 
-  // 3) Pagination sur le tri filtré
-  const totalItems = sortedRows.length;
+  const totalItems = sortedEntries.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
-  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalItems, totalPages, page]);
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [totalItems, totalPages, page]);
 
-  const pageRows = useMemo(() => {
+  const pageEntries = useMemo(() => {
     const start = (page - 1) * PAGE_SIZE;
-    return sortedRows.slice(start, start + PAGE_SIZE);
-  }, [sortedRows, page]);
+    return sortedEntries.slice(start, start + PAGE_SIZE);
+  }, [sortedEntries, page]);
+
+  const pageRows = useMemo(() => pageEntries.map((e) => e.row), [pageEntries]);
+  const rowIndexMap = useMemo(() => pageEntries.map((e) => e.idx), [pageEntries]);
+
+  const handleEdit = (globalIndex: number, key: string, newValue: string) => {
+    setData((prev) => {
+      const nextRows = prev.rows.slice();
+      nextRows[globalIndex] = { ...nextRows[globalIndex], [key]: newValue };
+      return { ...prev, rows: nextRows };
+    });
+  };
 
   const handleSort = (key: string) => {
     setSort((prev) =>
@@ -152,21 +145,15 @@ export default function App() {
 
       <div className="divider" />
 
-      <Upload
-        onData={(d) => { setError(null); setData(d); }}
-        onError={(msg) => setError(msg)}
-      />
+      <Upload onData={(d) => { setError(null); setData(d); }} onError={(msg) => setError(msg)} />
       {error && <p style={{ color: "crimson", marginTop: 12 }}>{error}</p>}
 
       {data.headers.length > 0 && (
         <section style={{ marginTop: 24 }}>
-          {/* Barre filtre + compteurs */}
           <div className="toolbar">
             <div className="counter">
               Total: {data.rows.length.toLocaleString()}
-              {debouncedQuery ? (
-                <> — Filtrées: {filteredRows.length.toLocaleString()}</>
-              ) : null}
+              {debouncedQuery ? <> — Filtrées: {totalItems.toLocaleString()}</> : null}
             </div>
 
             <div className="search">
@@ -177,32 +164,22 @@ export default function App() {
                 onChange={(e) => setQuery(e.target.value)}
                 aria-label="Filtrer les lignes du tableau"
               />
-              {query && (
-                <button className="btn-secondary" onClick={clearQuery}>Effacer</button>
-              )}
+              {query && <button className="btn-secondary" onClick={clearQuery}>Effacer</button>}
             </div>
           </div>
 
-          <Pagination
-            page={page}
-            totalItems={totalItems}
-            pageSize={PAGE_SIZE}
-            onPageChange={setPage}
-          />
+          <Pagination page={page} totalItems={totalItems} pageSize={PAGE_SIZE} onPageChange={setPage} />
 
           <Table
             data={{ headers: data.headers, rows: pageRows }}
             sortKey={sort.key ?? undefined}
             sortDirection={sort.direction}
             onSort={handleSort}
+            onEdit={handleEdit}
+            rowIndexMap={rowIndexMap}     
           />
 
-          <Pagination
-            page={page}
-            totalItems={totalItems}
-            pageSize={PAGE_SIZE}
-            onPageChange={setPage}
-          />
+          <Pagination page={page} totalItems={totalItems} pageSize={PAGE_SIZE} onPageChange={setPage} />
         </section>
       )}
     </main>
