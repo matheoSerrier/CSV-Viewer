@@ -6,21 +6,31 @@ import { decodeCsvFile } from "../utils/decodeCsvFile";
 import { streamParseCsv } from "../utils/streamParseCsv";
 
 interface UploadProps {
-  onData: (data: TableData) => void;
+  // appelé dès qu’un nouveau fichier commence (création de l’entrée d’historique)
+  onNewFile?: (meta: { id: string; name: string; size: number; date: number }) => void;
+  // 🔴 nouveau : chaque update remonte avec l’id de session
+  onDataFor: (id: string, data: TableData) => void;
   onError?: (message: string) => void;
 }
 
 const LARGE_THRESHOLD = 20 * 1024 * 1024; // 20 Mo
-const PREVIEW_MAX_ROWS = 50000;           // tu peux monter/descendre
+const PREVIEW_MAX_ROWS = 1000;            // ton réglage
+const BATCH_SIZE = 100;                   // ton réglage
 
-export default function Upload({ onData, onError }: UploadProps) {
+export default function Upload({ onNewFile, onDataFor, onError }: UploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [progress, setProgress] = useState<{loaded: number; total: number} | null>(null);
+  const [progress, setProgress] = useState<{ loaded: number; total: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const [lastFile, setLastFile] = useState<File | null>(null);
+  const [lastSessionId, setLastSessionId] = useState<string | null>(null);
+  const [isLoadingAll, setIsLoadingAll] = useState(false);
+
+  // dédup streaming
+  const seenKeysRef = useRef<Set<string>>(new Set());
+
   const sanitizeHeaders = (headers: string[]) => {
-    // même logique que le parseur "non vide + unique"
     const used = new Map<string, number>();
     return headers.map((h, i) => {
       const name = (h || `Colonne ${i + 1}`).trim();
@@ -48,45 +58,67 @@ export default function Upload({ onData, onError }: UploadProps) {
     return out;
   };
 
-  const handleSmallFile = async (file: File) => {
+  const handleSmallFile = async (file: File, sessionId: string) => {
     const text = await decodeCsvFile(file);
-    const data = parseCsv(text);
+    const data = parseCsv(text); // dédup incluse
     if (data.headers.length === 0) return onError?.("Fichier CSV vide ou invalide.");
-    onData(data);
+    onDataFor(sessionId, data); // 🔴 associe bien au bon fichier
   };
 
-  const handleLargeFile = async (file: File) => {
-    setNotice(`Fichier volumineux (${(file.size/1024/1024).toFixed(1)} Mo) : prévisualisation des ${PREVIEW_MAX_ROWS.toLocaleString()} premières lignes.`);
+  const streamFile = async (file: File, sessionId: string, maxRows: number | null) => {
     const table: TableData = { headers: [], rows: [] };
+    seenKeysRef.current = new Set<string>();
+    setProgress(null);
 
     await streamParseCsv(file, {
-      maxRows: PREVIEW_MAX_ROWS,
-      batchSize: 1000,
-      onProgress: (loaded, total) => setProgress({loaded, total}),
-      onHeaders: (h) => { table.headers = sanitizeHeaders(h); },
+      maxRows: maxRows ?? Number.POSITIVE_INFINITY,
+      batchSize: BATCH_SIZE,
+      onProgress: (loaded, total) => setProgress({ loaded, total }),
+      onHeaders: (h) => {
+        table.headers = sanitizeHeaders(h);
+        onDataFor(sessionId, { ...table }); // 🔴 update pour CE fichier
+      },
       onBatch: (batch) => {
-        // convertir et accumuler
-        const objs = toRowsObjects(table.headers, batch);
-        table.rows.push(...objs);
-        onData({ ...table }); // maj "live"
+        const filtered: string[][] = [];
+        for (const row of batch) {
+          const cells = row.map((v) => (v ?? "").trim());
+          const key = JSON.stringify(cells);
+          if (!seenKeysRef.current.has(key)) {
+            seenKeysRef.current.add(key);
+            filtered.push(cells);
+          }
+        }
+        if (!filtered.length) return;
+        table.rows.push(...toRowsObjects(table.headers, filtered));
+        onDataFor(sessionId, { ...table }); // 🔴 update pour CE fichier
       },
     });
 
-    setNotice((prev) => prev ? prev + " (prévisualisation terminée)" : null);
     setProgress(null);
+  };
+
+  const handleLargeFile = async (file: File, sessionId: string) => {
+    setNotice(`Fichier volumineux (${(file.size / 1024 / 1024).toFixed(1)} Mo) : prévisualisation des ${PREVIEW_MAX_ROWS.toLocaleString()} premières lignes.`);
+    await streamFile(file, sessionId, PREVIEW_MAX_ROWS);
   };
 
   const handleFile = async (file: File) => {
     const isCsv = file.type === "text/csv" || file.name.toLowerCase().endsWith(".csv");
     if (!isCsv) return onError?.("Veuillez sélectionner un fichier .csv");
-    setProgress(null);
+
+    const sessionId = `${Date.now()}-${file.name}`;
+    onNewFile?.({ id: sessionId, name: file.name, size: file.size, date: Date.now() });
+
+    setLastFile(file);
+    setLastSessionId(sessionId);
     setNotice(null);
+    setProgress(null);
 
     try {
       if (file.size > LARGE_THRESHOLD) {
-        await handleLargeFile(file);
+        await handleLargeFile(file, sessionId);
       } else {
-        await handleSmallFile(file);
+        await handleSmallFile(file, sessionId);
       }
     } catch (e) {
       console.error(e);
@@ -100,10 +132,13 @@ export default function Upload({ onData, onError }: UploadProps) {
     e.target.value = "";
   };
 
-  const onDrop = async (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault(); e.stopPropagation(); setDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) await handleFile(file);
+  const loadAll = async () => {
+    if (!lastFile || !lastSessionId) return;
+    setIsLoadingAll(true);
+    setNotice(`Chargement complet du fichier (${(lastFile.size / 1024 / 1024).toFixed(1)} Mo)…`);
+    await streamFile(lastFile, lastSessionId, null);
+    setIsLoadingAll(false);
+    setNotice("Chargement complet terminé.");
   };
 
   return (
@@ -111,7 +146,7 @@ export default function Upload({ onData, onError }: UploadProps) {
       <div
         className={`dropzone ${dragOver ? "is-dragover" : ""}`}
         onClick={() => inputRef.current?.click()}
-        onDrop={onDrop}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) handleFile(f); }}
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={(e) => { e.preventDefault(); setDragOver(false); }}
         role="button"
@@ -128,26 +163,27 @@ export default function Upload({ onData, onError }: UploadProps) {
       </div>
 
       {progress && (
-        <div style={{maxWidth:820, margin:"12px auto 0"}}>
-          <div style={{height:8, background:"#e5e7eb", borderRadius:999}}>
+        <div style={{ maxWidth: 820, margin: "12px auto 0" }}>
+          <div style={{ height: 8, background: "#e5e7eb", borderRadius: 999 }}>
             <div style={{
-              height:"100%",
+              height: "100%",
               width: `${(progress.loaded / progress.total) * 100}%`,
-              background:"#3b82f6",
-              borderRadius:999,
-              transition:"width .2s ease"
+              background: "#3b82f6", borderRadius: 999, transition: "width .2s ease"
             }} />
           </div>
-          <div style={{marginTop:6, fontSize:12, color:"#64748b", textAlign:"right"}}>
-            {(progress.loaded/1024/1024).toFixed(1)} Mo / {(progress.total/1024/1024).toFixed(1)} Mo
+          <div style={{ marginTop: 6, fontSize: 12, color: "#64748b", textAlign: "right" }}>
+            {(progress.loaded / 1024 / 1024).toFixed(1)} Mo / {(progress.total / 1024 / 1024).toFixed(1)} Mo
           </div>
         </div>
       )}
 
       {notice && (
-        <p style={{maxWidth:820, margin:"8px auto 0", color:"#64748b", fontSize:14}}>
-          {notice}
-        </p>
+        <div style={{ maxWidth: 820, margin: "8px auto 0", color: "#64748b", fontSize: 14, display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+          <span>{notice}</span>
+          {lastFile && !isLoadingAll && (
+            <button onClick={loadAll} className="btn-secondary">Charger tout le fichier</button>
+          )}
+        </div>
       )}
     </>
   );

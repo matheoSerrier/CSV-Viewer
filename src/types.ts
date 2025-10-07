@@ -13,3 +13,11 @@ export interface SortState {
   key: string | null;       // nom de colonne (header)
   direction: SortDirection; // 'asc' | 'desc'
 }
+
+export interface UploadEntry {
+  id: string;            // ex: `${Date.now()}-${name}`
+  name: string;          // nom du fichier
+  size: number;          // en octets
+  date: number;          // timestamp d'upload
+  data: TableData;       // données (avec modifications persistées)
+}
